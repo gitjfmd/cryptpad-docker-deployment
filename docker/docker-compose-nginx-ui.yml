@@ -1,0 +1,142 @@
+version: '3.8'
+
+networks:
+  tunnel_net:
+    external: true         # existing overlay used by Cloudflare/NPM
+  n8n_internal:
+    driver: overlay
+    internal: true
+
+secrets:
+  n8n_db_password:
+    external: true
+  n8n_encryption_key:
+    external: true
+  n8n_jwt_secret:
+    external: true
+
+volumes:
+  postgres_data:
+    driver: local
+  n8n_data:
+    driver: local
+  cryptpad_data:
+    driver: local
+    driver_opts: { type: none, o: bind, device: /var/lib/cryptpad/data }
+  cryptpad_config:
+    driver: local
+    driver_opts: { type: none, o: bind, device: /var/lib/cryptpad/config }
+  cryptpad_blob:
+    driver: local
+    driver_opts: { type: none, o: bind, device: /var/lib/cryptpad/blob }
+  cryptpad_block:
+    driver: local
+    driver_opts: { type: none, o: bind, device: /var/lib/cryptpad/block }
+  cryptpad_datastore:
+    driver: local
+    driver_opts: { type: none, o: bind, device: /var/lib/cryptpad/datastore }
+  cryptpad_customize:
+    driver: local
+    driver_opts: { type: none, o: bind, device: /var/lib/cryptpad/customize }
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    networks: [n8n_internal]
+    environment:
+      POSTGRES_DB: n8n
+      POSTGRES_USER: n8n
+      POSTGRES_PASSWORD_FILE: /run/secrets/n8n_db_password
+      POSTGRES_NON_ROOT_USER: n8n
+      POSTGRES_NON_ROOT_PASSWORD_FILE: /run/secrets/n8n_db_password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    secrets: [n8n_db_password]
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -h localhost -U n8n -d n8n']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    deploy:
+      restart_policy:
+        condition: any
+        delay: 5s
+        max_attempts: 10
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 256M
+
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:latest
+    networks: [tunnel_net, n8n_internal]
+    environment:
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: postgres
+      DB_POSTGRESDB_PORT: "5432"
+      DB_POSTGRESDB_DATABASE: n8n
+      DB_POSTGRESDB_USER: n8n
+      DB_POSTGRESDB_PASSWORD_FILE: /run/secrets/n8n_db_password
+      N8N_HOST: n8n-prod.secsols.dev
+      N8N_PORT: "5678"
+      N8N_PROTOCOL: https
+      WEBHOOK_URL: https://n8n-prod.secsols.dev
+      N8N_ENCRYPTION_KEY_FILE: /run/secrets/n8n_encryption_key
+      N8N_USER_MANAGEMENT_JWT_SECRET_FILE: /run/secrets/n8n_jwt_secret
+      N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS: "false"
+      GENERIC_TIMEZONE: UTC
+      TZ: UTC
+    volumes:
+      - n8n_data:/home/node/.n8n
+    secrets: [n8n_db_password, n8n_encryption_key, n8n_jwt_secret]
+    deploy:
+      restart_policy:
+        condition: any
+        delay: 5s
+        max_attempts: 10
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 512M
+
+  cryptpad:
+    image: cryptpad:2025.6.0
+    networks: [tunnel_net]
+    environment:
+      CPAD_MAIN_DOMAIN: https://crypt.secsols.dev
+      CPAD_SANDBOX_DOMAIN: https://cryptsandbox.secsols.dev
+      CPAD_CONF: /cryptpad/config/config.js
+      NODE_ENV: production
+      CPAD_HTTP_ADDRESS: 0.0.0.0
+      CPAD_HTTP_PORT: 3000
+    volumes:
+      - cryptpad_blob:/cryptpad/blob
+      - cryptpad_block:/cryptpad/block
+      - cryptpad_data:/cryptpad/data
+      - cryptpad_datastore:/cryptpad/datastore
+      - cryptpad_customize:/cryptpad/customize
+      - cryptpad_config:/cryptpad/config:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/config"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    deploy:
+      restart_policy:
+        condition: any
+        delay: 10s
+        max_attempts: 5
+      resources:
+        limits:
+          memory: 2G
+          cpus: '1.0'
+        reservations:
+          memory: 1G
+          cpus: '0.5'
+      # Uncomment if you need to pin to a specific node
+      # placement:
+      #   constraints: [node.hostname == your-node-name]
+
